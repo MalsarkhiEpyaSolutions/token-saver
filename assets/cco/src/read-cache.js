@@ -286,7 +286,15 @@ async function main() {
   const toolInput = event.tool_input || {};
   const filePath = toolInput.file_path || '';
   const sessionId = event.session_id || 'unknown';
-  const ppid = process.ppid;
+  // Agent-context identity for the "different process context" gate below.
+  // NOT process.ppid: on Windows every hook invocation is spawned in a fresh
+  // shell, so the ppid changed on each Read and the gate allowed every single
+  // re-read (measured on a live machine: 54 sessions, 112 redundant reads,
+  // ~470K tokens, 0 blocks). transcript_path is carried by every hook event,
+  // is stable across invocations within one agent context, and differs for a
+  // subagent — which is what this gate was always meant to test.
+  // Falls back to ppid so behaviour is unchanged if the field is ever absent.
+  const agentCtx = event.transcript_path || String(process.ppid);
 
   if (!filePath || filePath.startsWith('/dev/') || filePath.startsWith('/proc/')) {
     process.exit(0);
@@ -334,7 +342,7 @@ async function main() {
       cache.files[filePath] = {
         mtime, lines, tokens: estimateTokens(lines, ext),
         readAt: new Date().toISOString(), readAtMs: Date.now(),
-        ranges: [], ppids: [ppid], nudged: true,
+        ranges: [], ppids: [agentCtx], nudged: true,
       };
       cache.bigFileNudges = (cache.bigFileNudges || 0) + 1;
       saveCache(sessionId, cache);
@@ -348,7 +356,7 @@ async function main() {
       process.exit(0);
     }
 
-    allow(sessionId, cache, filePath, getMtime(filePath), offset, end, ext, ppid);
+    allow(sessionId, cache, filePath, getMtime(filePath), offset, end, ext, agentCtx);
   }
 
   // ── File deleted — allow (Read tool will return error naturally) ─────
@@ -357,13 +365,13 @@ async function main() {
 
   // ── File modified since last read — allow ───────────────────────────
   if (currentMtime !== entry.mtime) {
-    allow(sessionId, cache, filePath, currentMtime, offset, end, ext, ppid,
+    allow(sessionId, cache, filePath, currentMtime, offset, end, ext, agentCtx,
       `[read-cache] ${basename(filePath)} changed on disk — cache refreshed.`);
   }
 
   // ── Different process context (Agent subprocess) — allow ────────────
-  if (!(entry.ppids || []).includes(ppid)) {
-    entry.ppids = trimPpids([...(entry.ppids || []), ppid]);
+  if (!(entry.ppids || []).includes(agentCtx)) {
+    entry.ppids = trimPpids([...(entry.ppids || []), agentCtx]);
     entry.readAt = new Date().toISOString();
     entry.readAtMs = Date.now();
     saveCache(sessionId, cache);
@@ -373,7 +381,7 @@ async function main() {
   // ── New range not yet covered — allow ───────────────────────────────
   if (!isRangeCovered(entry.ranges, offset, end)) {
     entry.ranges.push([offset, end]);
-    entry.ppids = trimPpids([...(entry.ppids || []), ppid]);
+    entry.ppids = trimPpids([...(entry.ppids || []), agentCtx]);
     entry.lines += limit;
     entry.tokens += estimateTokens(limit, ext);
     entry.readAt = new Date().toISOString();
@@ -385,7 +393,7 @@ async function main() {
   // ── Staleness check — context may have shifted ──────────────────────
   const staleness = checkStaleness(cache, filePath);
   if (staleness.stale) {
-    allow(sessionId, cache, filePath, currentMtime, offset, end, ext, ppid,
+    allow(sessionId, cache, filePath, currentMtime, offset, end, ext, agentCtx,
       `[read-cache] Re-read allowed: ${basename(filePath)} context is stale (${staleness.reason}).`);
   }
 

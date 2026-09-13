@@ -9,15 +9,31 @@ or MiniMax — see below.
 
 ## Quick start — online (any Windows 10/11 machine, no admin)
 
+In a **regular** terminal (Start menu → Windows Terminal or PowerShell — *not* a terminal
+spawned by Claude Desktop, which sandboxes profile writes):
+
+```powershell
+irm https://raw.githubusercontent.com/MalsarkhiEpyaSolutions/token-saver/master/install.ps1 | iex
+```
+
+That downloads the latest release and runs `install` (pinned components; Headroom
+cold-loads 25-105s). No SmartScreen prompt — the exe arrives without a Mark-of-the-Web.
+Then fully quit Claude (Desktop: tray icon → Quit) and relaunch.
+
+<details><summary>Manual download instead</summary>
+
 1. Download the latest `token-saver-v*.zip` from
    [Releases](https://github.com/MalsarkhiEpyaSolutions/token-saver/releases),
    unzip anywhere, open a terminal next to `token-saver.exe`.
-   *The exe is not code-signed, so SmartScreen may warn on first run — click
+   *A browser download marks the file, so SmartScreen warns on first run — click
    "More info" → "Run anyway" (or `Unblock-File .\token-saver.exe`).*
-2. `.\token-saver.exe install`   (downloads pinned components; Headroom cold-loads 25-105s)
+2. `.\token-saver.exe install`
 3. Fully quit Claude (Desktop: tray icon → Quit) and relaunch.
-4. Every session now starts with:
-   `[TokenSaver] Headroom: up (:8787, ROUTED, reqs=N) | RTK: up | Semble: up (MCP) | CCO: up`
+
+</details>
+
+Either way, every session then starts with:
+`[TokenSaver] Headroom: up (:8787, ROUTED, reqs=N) | RTK: up | Semble: up (MCP) | CCO: up`
 
 The installer copies itself to `C:\token-stack\token-saver.exe` — you can delete the
 unzipped download afterwards. (The install directory stays `C:\token-stack` for
@@ -133,7 +149,7 @@ Each shows a popup confirming the new state.
 | `doctor [--fix]` | detect + repair the known failure modes |
 | `update --component X [--version v]` | move a component pin |
 | `gain` | unified savings report |
-| `uninstall [--keep-config] [-y]` | full rollback (Claude-file backups kept) |
+| `uninstall [--purge] [--keep-config] [-y]` | full rollback (Claude-file backups kept). `--purge` also deletes `C:\token-stack` and the read-cache data, so nothing is left to remove by hand — uv, Python and the HuggingFace cache are shared with other tooling and are deliberately left alone |
 
 ## Config keys (full control)
 

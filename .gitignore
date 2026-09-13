@@ -4,3 +4,7 @@ dist/
 publish-out/
 *.user
 .vs/
+
+# local-only
+.claude/settings.local.json
+headroom_memory.db

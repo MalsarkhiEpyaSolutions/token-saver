@@ -23,44 +23,41 @@ public sealed class InstallPipeline(
             throw new InvalidOperationException("Config invalid: " + string.Join("; ", errors)
                 + (cfg.InstallRoot.Contains(' ') ? " — choose a root without spaces." : ""));
         Directory.CreateDirectory(cfg.InstallRoot);
-        GuardAgainstMsixVirtualization(cfg.InstallRoot);
+        GuardAgainstMsixVirtualization();
     }
 
-    /// <summary>When this process runs inside an MSIX container (e.g. launched from Claude
-    /// Desktop), profile-dir writes are redirected into the package's LocalCache — the
+    /// <summary>When this process runs inside an MSIX container (e.g. a terminal spawned by
+    /// Claude Desktop), profile-dir writes are redirected into the package's LocalCache — the
     /// Scheduled Task and normal terminals then see an EMPTY real path (0x80070002, observed
-    /// live). Detection: write a probe into installRoot and look for its shadow copy under
-    /// any package's LocalCache. Only profile paths can be virtualized, so non-profile
-    /// roots (the default) pass instantly.</summary>
-    public static void GuardAgainstMsixVirtualization(string installRoot)
+    /// live). Probes %LOCALAPPDATA%, NOT installRoot: uv and semble always land in
+    /// ~\.local\bin and the wiring in ~\.claude, so a non-profile installRoot (the default
+    /// C:\token-stack) does not make the install safe — it only hides the symptom until
+    /// Claude silently ignores the whole stack.</summary>
+    public static void GuardAgainstMsixVirtualization()
     {
         var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        if (!installRoot.StartsWith(profile, StringComparison.OrdinalIgnoreCase))
-            return; // virtualization only applies inside the user profile
+        var packages = Path.Combine(profile, "AppData", "Local", "Packages");
+        if (!Directory.Exists(packages)) return;
 
         var probeName = $".ts-virt-probe-{Guid.NewGuid():N}";
-        var probePath = Path.Combine(installRoot, probeName);
+        var probePath = Path.Combine(profile, "AppData", "Local", probeName);
         File.WriteAllText(probePath, "probe");
         try
         {
-            var packages = Path.Combine(profile, "AppData", "Local", "Packages");
-            if (!Directory.Exists(packages)) return;
-
-            // Where would the shadow live? LocalCache mirrors the profile-relative layout.
-            var relative = Path.GetRelativePath(profile, installRoot); // e.g. AppData\Local\token-stack
+            // A virtualized write lands under <pkg>\LocalCache\Local\ (LocalCache mirrors the
+            // profile-relative layout). Reading that real path is itself never redirected.
             var virtualized = Directory.EnumerateDirectories(packages)
-                .Select(pkg => Path.Combine(pkg, "LocalCache",
-                    relative.Replace(@"AppData\Local", "Local").Replace(@"AppData\Roaming", "Roaming"),
-                    probeName))
+                .Select(pkg => Path.Combine(pkg, "LocalCache", "Local", probeName))
                 .Any(File.Exists);
 
             if (virtualized)
                 throw new InvalidOperationException(
-                    $"installRoot '{installRoot}' is being VIRTUALIZED into an MSIX package " +
-                    "LocalCache (this process runs inside a packaged app's sandbox, e.g. Claude " +
-                    "Desktop). The Scheduled Task would see an empty real path. " +
-                    $"Use a non-profile root (default {Config.ConfigStore.DefaultRoot}) or run " +
-                    "the installer from a regular terminal.");
+                    "This process is running inside an MSIX package sandbox (e.g. a terminal " +
+                    "spawned by Claude Desktop), so every write to your user profile is " +
+                    "redirected into that package's LocalCache — uv, semble and " +
+                    @"~\.claude\settings.json would all be invisible to Claude and to the " +
+                    "Scheduled Task. Re-run `token-saver install` from a REGULAR terminal " +
+                    "(Start menu → Windows Terminal or PowerShell).");
         }
         finally
         {
@@ -279,7 +276,48 @@ public sealed class InstallPipeline(
                 "rewired to the managed layout; the old folder is left for you to delete).");
     }
 
-    public void Uninstall(StackConfig cfg, bool keepConfig)
+    /// <summary>Directories `purge` deletes, in order. The HuggingFace cache is deliberately NOT
+    /// here: it is a shared location other AI tooling also populates, so wiping it would delete
+    /// models we never downloaded. Headroom's own models live inside it and are left behind.</summary>
+    public static IEnumerable<string> PurgePaths(StackConfig cfg)
+    {
+        yield return cfg.InstallRoot;
+        yield return Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude-context-optimizer");
+    }
+
+    /// <summary>Delete a directory that may hold the RUNNING exe. Windows refuses to unlink a file
+    /// that is mapped into a live process, so the caller's own binary is renamed aside first and
+    /// left for the OS to clean up on next boot; everything else goes now.</summary>
+    private void PurgeDirectory(string dir)
+    {
+        if (!Directory.Exists(dir)) { log($"      {dir} (already absent)"); return; }
+
+        var self = Environment.ProcessPath;
+        if (self is not null && self.StartsWith(dir, StringComparison.OrdinalIgnoreCase))
+        {
+            // Rename rather than delete: the file is locked, but a rename releases the NAME so the
+            // directory can be recreated by a future install without colliding.
+            try { File.Move(self, self + $".delete-me-{DateTime.UtcNow:yyyyMMddHHmmss}", overwrite: false); }
+            catch { /* best effort — the sweep below just skips it */ }
+        }
+
+        var failed = 0;
+        foreach (var file in Directory.EnumerateFiles(dir, "*", SearchOption.AllDirectories))
+        {
+            try { File.SetAttributes(file, FileAttributes.Normal); File.Delete(file); }
+            catch { failed++; }
+        }
+        try { Directory.Delete(dir, recursive: true); }
+        catch { failed++; }
+
+        log(failed == 0
+            ? $"      removed {dir}"
+            : $"      removed {dir} ({failed} item(s) still locked — they vanish after Claude and " +
+              "this window close; delete the folder then if it lingers)");
+    }
+
+    public void Uninstall(StackConfig cfg, bool keepConfig, bool purge = false)
     {
         log("stopping + unregistering HeadroomProxy task");
         new HeadroomComponent(runner, port, http).Unwire(cfg);
@@ -309,8 +347,20 @@ public sealed class InstallPipeline(
 
         if (!keepConfig && File.Exists(ConfigStore.DefaultPath))
             File.Delete(ConfigStore.DefaultPath);
-        log($"NOTE: {cfg.InstallRoot} (venv/rtk/cco/launcher) left on disk — delete manually " +
-            "after closing any process using it.");
-        log("NOTE: %USERPROFILE%\\.claude-context-optimizer (read-cache data) left on disk — delete manually if unwanted.");
+
+        if (purge)
+        {
+            log("purging installed files");
+            foreach (var dir in PurgePaths(cfg)) PurgeDirectory(dir);
+            log("NOTE: uv + Python (%USERPROFILE%\\.local) and the HuggingFace model cache are " +
+                "shared with other tools, so they are left alone on purpose.");
+        }
+        else
+        {
+            log($"NOTE: {cfg.InstallRoot} (venv/rtk/cco/launcher) left on disk — re-run with " +
+                "--purge to delete it too.");
+            log("NOTE: %USERPROFILE%\\.claude-context-optimizer (read-cache data) left on disk — " +
+                "--purge removes it.");
+        }
     }
 }
