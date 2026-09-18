@@ -174,6 +174,9 @@ public sealed partial class SetupForm : Form
         var snap = InstallState.Inspect(Branding.Version);
         if (snap.Root is { Length: > 0 }) _root.Text = snap.Root;
 
+        // On by default for a newcomer, but a recorded "no" is never quietly overturned.
+        _outputStyle.Checked = snap.OutputStyleEnabled ?? true;
+
         (_verdict.Text, _verdict.ForeColor, _action.Text) = snap.Verdict switch
         {
             InstallVerdict.NotInstalled => (

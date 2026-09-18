@@ -26,6 +26,11 @@ public sealed record InstallSnapshot(
     string? InstalledVersion,
     string SetupVersion)
 {
+    /// <summary>The output-style choice already recorded on this machine: null = never answered,
+    /// which lets the setup window default the box ON for newcomers while still respecting a
+    /// previous "no" instead of quietly re-enabling something the user turned down.</summary>
+    public bool? OutputStyleEnabled { get; init; }
+
     public bool AlreadyCurrent => Verdict is InstallVerdict.UpToDate;
 }
 
@@ -67,7 +72,8 @@ public static class InstallState
         {
             if (!File.Exists(path)) return Compare(null, null, setupVersion);
             var cfg = ConfigStore.Load(path);
-            return Compare(cfg.InstallRoot, cfg.Version, setupVersion);
+            return Compare(cfg.InstallRoot, cfg.Version, setupVersion)
+                   with { OutputStyleEnabled = cfg.OutputStyle.Enabled };
         }
         catch
         {

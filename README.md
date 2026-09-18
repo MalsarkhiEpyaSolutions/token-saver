@@ -98,9 +98,14 @@ delete once you have verified the new one.
 An interactive install also offers one extra that is **not** a savings layer — a
 writing style. It is Claude Code's built-in Concise style plus a single rule:
 suggestion lists are capped at five items, while exhaustive results (errors, test
-failures, security findings, required steps) are still reported in full. Default is
-**off**; answer once and the choice sticks in `config.json` (`outputStyle.enabled`),
-so you are never asked again. Unattended installs skip the question and leave it off.
+failures, security findings, required steps) are still reported in full.
+
+The setup window offers it **pre-ticked** — untick it if you would rather keep your current
+style. Your answer sticks in `config.json` (`outputStyle.enabled`): a run that declined it is
+never quietly re-enabled by a later update, and declining removes the style file and clears the
+`outputStyle` key only when it still names ours, so a style you picked yourself is untouched.
+Unattended console installs (`token-saver.exe install`) skip the question entirely and leave it
+off unless you pass `--output-style`.
 
 ## GLM / Kimi / MiniMax / OpenRouter (Claude Code with a vendor endpoint)
 

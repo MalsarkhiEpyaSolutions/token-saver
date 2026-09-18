@@ -65,10 +65,26 @@ public class InstallRootTests
         .Where(e => e.StartsWith("installRoot", StringComparison.Ordinal)).ToList();
 
     [Fact]
-    public void Validate_AcceptsAnExistingDriveWithoutSpaces()
+    public void Validate_AcceptsAnyFixedDriveWithoutSpaces()
     {
-        Assert.Empty(RootErrors(@"C:\token-stack"));
-        Assert.Empty(RootErrors(@"C:\dev\token-stack"));
+        // Every fixed drive on this machine must be a legal root — the whole point of --root is
+        // putting a multi-GB stack on the drive that has room for it.
+        foreach (var fixedDrive in DriveInfo.GetDrives()
+                     .Where(d => d.DriveType == DriveType.Fixed && d.IsReady))
+            Assert.Empty(RootErrors(Path.Combine(fixedDrive.Name, "token-stack")));
+    }
+
+    [Fact]
+    public void Validate_RejectsRemovableAndNetworkRoots()
+    {
+        // A USB or mapped drive installs fine and is dead at the next logon, because the proxy's
+        // Scheduled Task fires before it is attached. Refusing up front beats that silence.
+        Assert.Contains(RootErrors(@"\\server\share\token-stack"), e => e.Contains("network path"));
+
+        var removable = DriveInfo.GetDrives()
+            .FirstOrDefault(d => d.DriveType is DriveType.Removable or DriveType.Network && d.IsReady);
+        if (removable is null) return; // none attached right now — nothing to assert
+        Assert.NotEmpty(RootErrors(Path.Combine(removable.Name, "token-stack")));
     }
 
     [Fact]

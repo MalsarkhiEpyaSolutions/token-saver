@@ -95,4 +95,25 @@ public class InstallStateTests
         Assert.Equal(@"D:\token-stack", s.Root);
         Assert.Equal("1.4.0", s.InstalledVersion);
     }
+
+    /// <summary>The setup box defaults ON, but a recorded answer wins — re-enabling a style the
+    /// user explicitly declined on a previous run would be the installer overruling them.</summary>
+    [Theory]
+    [InlineData(null, true)]    // never asked -> the new default
+    [InlineData(true, true)]
+    [InlineData(false, false)]  // declined before -> stays declined
+    public void Inspect_CarriesTheRecordedOutputStyleChoice(bool? recorded, bool expectedBox)
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "ts-state", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var path = Path.Combine(dir, "config.json");
+
+        var cfg = StackConfig.CreateDefault(@"C:\token-stack");
+        cfg.OutputStyle.Enabled = recorded;
+        ConfigStore.Save(cfg, path);
+
+        var s = InstallState.Inspect(Setup, path);
+        Assert.Equal(recorded, s.OutputStyleEnabled);
+        Assert.Equal(expectedBox, s.OutputStyleEnabled ?? true); // what the checkbox becomes
+    }
 }
