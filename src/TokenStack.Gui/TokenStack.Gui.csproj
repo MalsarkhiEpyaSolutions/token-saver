@@ -1,0 +1,22 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net10.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <!-- Separate name on purpose: token-saver.exe must stay a CONSOLE app. Hooks, the
+         Scheduled Task and the session status hook all read its stdout, and InstallPipeline
+         copies the running exe into the install root, so a GUI build would land there and make
+         every hook pop a window. The GUI drives the CLI instead of replacing it. -->
+    <AssemblyName>token-saver-setup</AssemblyName>
+    <RootNamespace>TokenStack.Gui</RootNamespace>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\TokenStack.Core\TokenStack.Core.csproj" />
+  </ItemGroup>
+
+</Project>

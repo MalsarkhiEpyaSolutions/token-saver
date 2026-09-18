@@ -20,12 +20,11 @@ public sealed class UninstallCommand : Command<UninstallCommand.Settings>
 
     protected override int Execute(CommandContext context, Settings settings, CancellationToken cancellationToken)
     {
+        var cfg = Services.LoadConfigOrDefault();
         var what = settings.Purge
-            ? "Remove the token stack AND delete its installed files (task, env vars, hooks, MCP entry, C:\token-stack)?"
+            ? $"Remove the token stack AND delete its installed files (task, env vars, hooks, MCP entry, {cfg.InstallRoot})?"
             : "Remove the token stack (task, env vars, hooks, MCP entry)?";
         if (!settings.Yes && !AnsiConsole.Confirm(what, false)) return 1;
-
-        var cfg = Services.LoadConfigOrDefault();
         new InstallPipeline(Services.Runner, Services.Env, Services.Port, Services.Http,
                 m => AnsiConsole.MarkupLineInterpolated($"[grey]{m}[/]"))
             .Uninstall(cfg, settings.KeepConfig, settings.Purge);

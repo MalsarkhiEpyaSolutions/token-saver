@@ -16,6 +16,11 @@ public sealed class InstallPipeline(
     public string ClaudeJsonPath { get; init; } = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".claude.json");
 
+    /// <summary>Yes/no prompt for the one opt-in extra (the output style). null = non-interactive
+    /// (the `irm | iex` one-liner, CI, tests, `--component` repairs) — those must never block, so
+    /// a null Confirm means "don't ask, leave it off".</summary>
+    public Func<string, bool>? Confirm { get; init; }
+
     public static void Preflight(StackConfig cfg)
     {
         var errors = ConfigValidator.Validate(cfg);
@@ -91,6 +96,7 @@ public sealed class InstallPipeline(
         log("[1/8] preflight");
         Preflight(cfg);
         DetectLegacyInstall();
+        WarnIfRelocating(cfg);
 
         var src = source ?? InstallSourceResolver.Resolve(
             Path.GetDirectoryName(Environment.ProcessPath) ?? Directory.GetCurrentDirectory(), null);
@@ -163,17 +169,28 @@ public sealed class InstallPipeline(
 
         log("[7/8] claude wiring (settings.json + .claude.json, one backup each)");
         CopySelfToRoot(cfg);
+        ResolveOutputStyle(cfg);
         ApplyClaudeWiring(cfg);
         try
         {
             new ShortcutCreator(runner).CreateAll(Path.Combine(cfg.InstallRoot, Branding.ExeName));
             log("      desktop buttons created: 'Token Stack' (whole stack) + a 'Token Stack " +
-                "Controls' folder with per-layer toggles (Headroom/RTK/Semble)");
+                "Controls' folder with per-layer toggles (Headroom/RTK/Semble/CCO) + an " +
+                "Uninstall button");
         }
         catch (Exception ex) { log($"      (desktop shortcuts skipped: {ex.Message})"); }
 
         log("[8/8] save config");
-        if (persistConfig) ConfigStore.Save(cfg, ConfigStore.DefaultPath);
+        if (persistConfig)
+        {
+            // Stamp the build that installed, so the next run can tell "already current" from
+            // "needs upgrading" without probing every component.
+            cfg.Version = Branding.Version;
+            // config.json lives INSIDE the chosen root, so the pointer must be written too —
+            // it is the only way a later `status`/`uninstall` finds a non-default root.
+            ConfigStore.Save(cfg, Path.Combine(cfg.InstallRoot, "config.json"));
+            ConfigStore.WritePointer(cfg.InstallRoot);
+        }
         else log("      (component-scoped run — config.json left untouched)");
 
         log("DONE. Fully quit Claude Desktop from the system tray and relaunch " +
@@ -197,6 +214,30 @@ public sealed class InstallPipeline(
 
         cfg.Headroom.UpstreamUrl = ProviderDetection.ResolveUpstream(
             current, cfg.Headroom.UpstreamUrl, RoutingManager.ProxyUrl(cfg.Headroom.Port));
+    }
+
+    /// <summary>The one opt-in extra: ask once, then remember. Not a savings layer — a writing
+    /// preference — so it defaults OFF and is only ever enabled by an explicit yes. Writing the
+    /// .md happens here; ApplyClaudeWiring selects it in settings.json.</summary>
+    private void ResolveOutputStyle(StackConfig cfg)
+    {
+        cfg.OutputStyle.Enabled = OutputStyleComponent.Resolve(
+            cfg.OutputStyle.Enabled,
+            Confirm is null
+                ? null
+                : () => Confirm($"      install the optional '{OutputStyleComponent.StyleName}' " +
+                                "output style? (shorter answers; suggestion lists capped at 5)"));
+
+        if (cfg.OutputStyle.Enabled == true)
+        {
+            OutputStyleComponent.Install();
+            log($"      output style '{OutputStyleComponent.StyleName}' installed " +
+                $"({OutputStyleComponent.StylePath})");
+        }
+        else
+        {
+            OutputStyleComponent.Remove();
+        }
     }
 
     /// <summary>All Claude-file edits in one editor session per file = one backup per run.
@@ -223,6 +264,11 @@ public sealed class InstallPipeline(
                 Path.Combine(cfg.InstallRoot, Branding.ExeName));
         else
             changed |= ClaudeSurgeon.RemoveSessionStatusHook(settings);
+
+        if (cfg.OutputStyle.Enabled == true)
+            changed |= ClaudeSurgeon.SetOutputStyle(settings, OutputStyleComponent.StyleName);
+        else
+            changed |= ClaudeSurgeon.RemoveOutputStyle(settings, OutputStyleComponent.StyleName);
 
         if (cfg.Routing.Cli && cfg.Headroom.Enabled) // routing only makes sense when the proxy is on
             changed |= ClaudeSurgeon.SetEnvBaseUrl(settings, RoutingManager.ProxyUrl(cfg.Headroom.Port));
@@ -263,6 +309,24 @@ public sealed class InstallPipeline(
         {
             log("      self-copy skipped (target in use) — existing copy kept");
         }
+    }
+
+    /// <summary>Installing into a different root than last time leaves the old folder (venv,
+    /// models, rtk, cco — gigabytes) orphaned: the Scheduled Task and hooks are rewritten to the
+    /// new path, so nothing still reads it, but nothing deletes it either. Say so rather than
+    /// silently stranding it, and do not auto-delete — the user may have picked the new root by
+    /// mistake and the old install is their way back.</summary>
+    private void WarnIfRelocating(StackConfig cfg)
+    {
+        var previous = ConfigStore.ReadPointer();
+        if (previous is null
+            || string.Equals(Path.GetFullPath(previous), Path.GetFullPath(cfg.InstallRoot),
+                             StringComparison.OrdinalIgnoreCase))
+            return;
+
+        log($"      NOTE: install root moves {previous} -> {cfg.InstallRoot}. Hooks, task and " +
+            "shortcuts are repointed; the old folder is LEFT ON DISK. Verify the new install, " +
+            $"then delete {previous} by hand.");
     }
 
     /// <summary>Recognize the hand-built reference layout and announce adoption (spec §5.0):
@@ -332,7 +396,9 @@ public sealed class InstallPipeline(
         changed |= ClaudeSurgeon.RemoveCcoHooks(settings);
         changed |= ClaudeSurgeon.RemoveSessionStatusHook(settings);
         changed |= ClaudeSurgeon.RemoveEnvBaseUrl(settings);
+        changed |= ClaudeSurgeon.RemoveOutputStyle(settings, OutputStyleComponent.StyleName);
         if (changed) settingsEditor.SaveWithBackup(settings);
+        OutputStyleComponent.Remove();
 
         var cjEditor = new ClaudeFileEditor(ClaudeJsonPath);
         var cj = cjEditor.Load();
@@ -345,8 +411,14 @@ public sealed class InstallPipeline(
 
         try { new ShortcutCreator(runner).Remove(); log("removed desktop button"); } catch { }
 
-        if (!keepConfig && File.Exists(ConfigStore.DefaultPath))
-            File.Delete(ConfigStore.DefaultPath);
+        if (!keepConfig)
+        {
+            var configPath = Path.Combine(cfg.InstallRoot, "config.json");
+            if (File.Exists(configPath)) File.Delete(configPath);
+            // The pointer lives in the profile, so purge never reaches it — drop it here or the
+            // next run still claims an install at a root we just dismantled.
+            ConfigStore.DeletePointer();
+        }
 
         if (purge)
         {

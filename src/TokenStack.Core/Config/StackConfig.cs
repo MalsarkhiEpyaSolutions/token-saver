@@ -5,6 +5,11 @@ namespace TokenStack.Core.Config;
 public sealed class StackConfig
 {
     [JsonPropertyName("schemaVersion")] public int SchemaVersion { get; set; } = 1;
+
+    /// <summary>The token-saver version that last installed. Empty on installs made before this
+    /// field existed, which InstallState reads as "upgradable" rather than "current".</summary>
+    [JsonPropertyName("version")] public string Version { get; set; } = "";
+
     [JsonPropertyName("installRoot")] public string InstallRoot { get; set; } = "";
     [JsonPropertyName("headroom")] public HeadroomConfig Headroom { get; set; } = new();
     [JsonPropertyName("rtk")] public RtkConfig Rtk { get; set; } = new();
@@ -12,6 +17,7 @@ public sealed class StackConfig
     [JsonPropertyName("cco")] public CcoConfig Cco { get; set; } = new();
     [JsonPropertyName("routing")] public RoutingConfig Routing { get; set; } = new();
     [JsonPropertyName("hooks")] public HooksConfig Hooks { get; set; } = new();
+    [JsonPropertyName("outputStyle")] public OutputStyleConfig OutputStyle { get; set; } = new();
     [JsonPropertyName("bootstrap")] public BootstrapConfig Bootstrap { get; set; } = new();
     [JsonPropertyName("profiles")] public List<ProfileConfig> Profiles { get; set; } = new();
 
@@ -68,6 +74,14 @@ public sealed class RoutingConfig
 public sealed class HooksConfig
 {
     [JsonPropertyName("sessionStatusLine")] public bool SessionStatusLine { get; set; } = true;
+}
+
+/// <summary>The optional "Concise Plus" output style — a preference, not a savings layer.</summary>
+public sealed class OutputStyleConfig
+{
+    /// <summary>Tri-state on purpose: null = never asked (install prompts once), true/false =
+    /// the user's answer, which install then honours silently on every later run.</summary>
+    [JsonPropertyName("enabled")] public bool? Enabled { get; set; }
 }
 
 public sealed class BootstrapConfig

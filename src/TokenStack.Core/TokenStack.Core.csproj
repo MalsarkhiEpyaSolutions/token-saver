@@ -8,6 +8,8 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\run_proxy.py.tmpl" />
+    <EmbeddedResource Include="..\..\assets\output-styles\concise-plus.md"
+                      LogicalName="TokenStack.Core.concise-plus.md" />
   </ItemGroup>
 
   <!-- Vendor the pinned CCO read-cache snapshot into the exe: zip assets\cco at build time

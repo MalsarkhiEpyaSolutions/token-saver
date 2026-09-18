@@ -165,6 +165,25 @@ public static class ClaudeSurgeon
         return true;
     }
 
+    // ---------- outputStyle (optional, opt-in) ----------
+
+    public static bool SetOutputStyle(JsonNode root, string name)
+    {
+        if (root["outputStyle"]?.GetValue<string>() == name) return false;
+        root.AsObject()["outputStyle"] = name;
+        return true;
+    }
+
+    /// <summary>Clears the key ONLY when it still names OUR style. A style the user picked
+    /// themselves (built-in or their own) is left untouched — same content-signature rule the
+    /// hook surgery follows, so declining or uninstalling never overwrites someone's choice.</summary>
+    public static bool RemoveOutputStyle(JsonNode root, string name)
+    {
+        if (root["outputStyle"]?.GetValue<string>() != name) return false;
+        root.AsObject().Remove("outputStyle");
+        return true;
+    }
+
     // ---------- mcpServers.semble ----------
 
     public static bool EnsureSembleMcp(JsonNode root, string sembleExePath)

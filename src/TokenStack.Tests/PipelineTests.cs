@@ -4,6 +4,7 @@ using Xunit;
 
 namespace TokenStack.Tests;
 
+[Collection(MsixProbe.Name)] // Preflight runs the MSIX guard — see MsixProbe
 public class PipelineTests
 {
     private static InstallPipeline PipeWith(string settings, string claudeJson, out FakeEnv env)

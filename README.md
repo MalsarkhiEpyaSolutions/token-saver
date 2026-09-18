@@ -35,9 +35,72 @@ Then fully quit Claude (Desktop: tray icon → Quit) and relaunch.
 Either way, every session then starts with:
 `[TokenSaver] Headroom: up (:8787, ROUTED, reqs=N) | RTK: up | Semble: up (MCP) | CCO: up`
 
-The installer copies itself to `C:\token-stack\token-saver.exe` — you can delete the
-unzipped download afterwards. (The install directory stays `C:\token-stack` for
-seamless upgrades from older versions.)
+The installer copies itself to `<installRoot>\token-saver.exe` — you can delete the
+unzipped download afterwards.
+
+### The setup window
+
+The zip carries two executables:
+
+| File | What it is |
+|---|---|
+| `token-saver-setup.exe` | the setup window — pick the folder, watch a progress bar and a live log |
+| `token-saver.exe` | the console tool — the real installer, and what the hooks and the Scheduled Task run |
+
+**It checks before it installs.** On launch the window reads the recorded install and says which
+case you are in, and the button follows:
+
+| What it finds | Banner | Button |
+|---|---|---|
+| nothing installed | this installs version X | **Install** |
+| the same version (or newer) | already installed at `<root>` — nothing to update | **Reinstall / Repair** |
+| an older version | installed X → this setup updates to Y | **Update** |
+| an install with no recorded version (anything before v1.5.0) | brings it to Y | **Update** |
+
+So re-running the one-liner on an up-to-date machine tells you so instead of rebuilding a stack
+that was already correct. The version is written into `config.json` on every install; a stack
+whose version cannot be read is treated as upgradable, never assumed current, and an older setup
+run over a newer install reports "nothing to update" rather than offering a downgrade.
+
+The setup window does not install anything itself: it runs `token-saver.exe install` underneath
+and renders its output, so there is only ever one implementation of what "install" means. The
+console tool stays a console app on purpose — the session hook reads its stdout, and `install`
+copies the running exe into the install root, so a GUI build landing there would make every hook
+pop a window.
+
+Prefer the command line? `.\token-saver.exe install` still does everything, unattended.
+
+### Choosing where it installs
+
+The stack (venv, models, rtk, cco) is a few GB, so you can put it on another drive.
+A fresh install in a real terminal **asks** for the directory and offers
+`C:\token-stack` as the default; press Enter to accept it. To skip the question, or
+to install unattended:
+
+```powershell
+.\token-saver.exe install --root D:\token-stack
+```
+
+The path must be absolute and contain **no spaces** (spaces break hook quoting), and
+the drive must exist — both are checked before anything is downloaded. The chosen
+root is recorded in `%USERPROFILE%\.token-saver-root` so every later command
+(`status`, `config`, `uninstall`) finds it; without that file the tool falls back to
+`C:\token-stack`, which is where every pre-1.3 install lives, so upgrades are seamless
+and need no flag.
+
+Re-running `install` on an existing stack keeps its current root — it only asks on a
+first install. Passing a *different* `--root` moves the install: hooks, the Scheduled
+Task and the shortcuts are repointed, and the old folder is left on disk for you to
+delete once you have verified the new one.
+
+### Optional: the "Concise Plus" output style
+
+An interactive install also offers one extra that is **not** a savings layer — a
+writing style. It is Claude Code's built-in Concise style plus a single rule:
+suggestion lists are capped at five items, while exhaustive results (errors, test
+failures, security findings, required steps) are still reported in full. Default is
+**off**; answer once and the choice sticks in `config.json` (`outputStyle.enabled`),
+so you are never asked again. Unattended installs skip the question and leave it off.
 
 ## GLM / Kimi / MiniMax / OpenRouter (Claude Code with a vendor endpoint)
 
@@ -129,27 +192,34 @@ Claude after toggling for it to take effect.
 **The buttons:** `install` drops these on your Desktop (re-create anytime with
 `.\token-saver.exe shortcut`):
 - **Token Stack** (loose icon) — double-click toggles the *whole* stack on/off.
-- **Token Stack Controls** (folder) — one toggle per layer: *Headroom*, *RTK*, *Semble* — so you
-  can flip any single feature with a click.
+- **Token Stack Controls** (folder) — one toggle per layer: *Headroom*, *RTK*, *Semble*,
+  *CCO read-cache* — so you can flip any single feature with a click. The same folder also holds
+  an **Uninstall TokenSaver** button.
 
-Each shows a popup confirming the new state.
+Each toggle shows a popup confirming the new state.
+
+The Uninstall button deliberately runs plain `uninstall`, not `uninstall --purge`: a desktop icon
+is one mis-click away, so it unwires the stack (hooks, task, env vars, MCP entry — all reversible
+by re-installing) and **keeps the installed files**. It opens a normal window, not a minimized
+one, because it asks before changing anything and defaults to *no*. To delete the files too, run
+`.\token-saver.exe uninstall --purge` yourself.
 
 ## Commands
 
 | Command | What |
 |---|---|
-| `install` | full install/repair (idempotent; `--component headroom\|rtk\|semble`; `--offline`/`--online`) |
+| `install` | full install/repair (idempotent; `--root <PATH>`; `--component headroom\|rtk\|semble`; `--offline`/`--online`) |
 | `launcher` | interactive: make a desktop launcher for a model (GLM/Kimi/MiniMax/OpenRouter/custom), runs in parallel |
 | `on` / `off` / `toggle` `[layer]` | pause/resume whole stack or one layer (no reinstall) |
 | `shortcut` | (re)create the desktop toggle button |
 | `pack` | build an offline bundle (run on an online machine) |
 | `status` | live table (shows OFF for paused layers); `--hook` one-line; `--json` |
 | `start` / `stop` / `restart` | proxy lifecycle (restart = zombie recovery) |
-| `config list/get/set/open` | edit `%LOCALAPPDATA%\token-stack\config.json` |
+| `config list/get/set/open` | edit `<installRoot>\config.json` |
 | `doctor [--fix]` | detect + repair the known failure modes |
 | `update --component X [--version v]` | move a component pin |
 | `gain` | unified savings report |
-| `uninstall [--purge] [--keep-config] [-y]` | full rollback (Claude-file backups kept). `--purge` also deletes `C:\token-stack` and the read-cache data, so nothing is left to remove by hand — uv, Python and the HuggingFace cache are shared with other tooling and are deliberately left alone |
+| `uninstall [--purge] [--keep-config] [-y]` | full rollback (Claude-file backups kept). `--purge` also deletes the install root and the read-cache data, so nothing is left to remove by hand — uv, Python and the HuggingFace cache are shared with other tooling and are deliberately left alone |
 
 ## Config keys (full control)
 

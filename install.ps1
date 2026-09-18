@@ -20,4 +20,12 @@ Remove-Item -Recurse -Force $dest -ErrorAction SilentlyContinue
 Expand-Archive $zip $dest -Force
 Remove-Item $zip -Force
 
-& (Join-Path $dest 'token-saver.exe') install
+$setup = Join-Path $dest 'token-saver-setup.exe'
+if (Test-Path $setup) {
+    # The GUI picks the install folder and shows progress; it runs the CLI underneath.
+    Write-Host "launching setup ..." -ForegroundColor Cyan
+    Start-Process -FilePath $setup -Wait
+} else {
+    # Older release, or a headless machine: fall back to the console installer.
+    & (Join-Path $dest 'token-saver.exe') install
+}
