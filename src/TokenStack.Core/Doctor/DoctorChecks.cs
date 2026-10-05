@@ -35,6 +35,7 @@ public static class DoctorRegistry
     {
         new RoutingBypassedCheck(), new ProxyZombieCheck(), new ProxyExtraMissingCheck(),
         new SembleUvxCheck(), new RtkHookMissingCheck(), new RtkHookPowershellCheck(),
+        new RtkHookDuplicateCheck(), new RtkHookUnresolvableCheck(), new RipgrepMissingCheck(),
         new CcoHookMissingCheck(),
         new ModelPinLeftoverCheck(), new PathSpacesCheck(), new TaskMisconfiguredCheck(),
         new DisabledDriftCheck(), new OfflineModelsPresentCheck(),
@@ -127,27 +128,111 @@ public sealed class SembleUvxCheck : IDoctorCheck
     }
 }
 
+/// <summary>`rtk verify` reports only the bare `rtk hook claude` spelling, so people add that by
+/// hand next to the full-path entry the installer writes, believing ours is broken. It is not —
+/// both spellings were measured to return byte-identical rewrites, and feeding an
+/// already-rewritten command back through the hook produces no output, so nothing is corrupted.
+/// The cost is real but narrow: rtk is spawned once per duplicate on every single Bash call.</summary>
+public sealed class RtkHookDuplicateCheck : IDoctorCheck
+{
+    public string Id => "rtk-hook-duplicate";
+
+    public CheckResult Detect(DoctorContext ctx)
+    {
+        if (!ctx.Config.Rtk.Enabled) return new(Id, true, "rtk disabled", false);
+        var n = ClaudeSurgeon.CountRtkHooks(ctx.Settings);
+        return n <= 1
+            ? new(Id, true, "one rtk hook", false)
+            : new(Id, false, $"{n} rtk hooks wired — rtk runs {n}x per Bash call", true);
+    }
+
+    /// <summary>Collapses to the bare spelling, except when rtk is unresolvable on PATH — there
+    /// the full path is the only form that keeps filtering alive.</summary>
+    public bool Fix(DoctorContext ctx) =>
+        RtkHookForm.Rewrite(ctx, bare: ctx.Runner.Run("rtk", "--version", 15000).Ok);
+}
+
+/// <summary>rtk shells out to ripgrep for `rtk grep`. Without it rtk falls back to a direct exec
+/// and prints "Failed to resolve 'rg' via PATH" on every search — a warning that is easy to read
+/// as a broken install when it is really a missing optional accelerator. Not auto-fixable: we do
+/// not ship rg, and installing a package manager's package behind the user's back is worse than
+/// telling them the one command to run.</summary>
+public sealed class RipgrepMissingCheck : IDoctorCheck
+{
+    public string Id => "ripgrep-missing";
+
+    public CheckResult Detect(DoctorContext ctx)
+    {
+        if (!ctx.Config.Rtk.Enabled) return new(Id, true, "rtk disabled", false);
+        return ctx.Runner.Run("rg", "--version", 15000).Ok
+            ? new(Id, true, "ripgrep on PATH", false)
+            : new(Id, false, "ripgrep (rg) not on PATH — `rtk grep` degrades and warns on every "
+                           + "search. Install: winget install BurntSushi.ripgrep.MSVC", false);
+    }
+
+    public bool Fix(DoctorContext ctx) => false;
+}
+
 public sealed class RtkHookMissingCheck : IDoctorCheck
 {
     public string Id => "rtk-hook-missing";
     public CheckResult Detect(DoctorContext ctx)
     {
         if (!ctx.Config.Rtk.Enabled) return new(Id, true, "rtk disabled", false);
-        var pre = ctx.Settings["hooks"]?["PreToolUse"]?.AsArray();
-        var entry = pre?.FirstOrDefault(e =>
-            e?["hooks"]?[0]?["command"]?.GetValue<string>()
-                ?.Contains("rtk.exe", StringComparison.OrdinalIgnoreCase) == true);
-        if (entry is null) return new(Id, false, "PreToolUse rtk hook absent", true);
+        // "Absent" must mean no rtk hook in ANY spelling. Matching only "rtk.exe" reported a
+        // hand-added bare `rtk hook claude` as missing while it was filtering perfectly.
+        if (ClaudeSurgeon.CountRtkHooks(ctx.Settings) == 0)
+            return new(Id, false, "PreToolUse rtk hook absent", true);
+
+        var exePath = RtkHookForm.FullPathCommand(ctx.Settings);
+        if (exePath is null)
+            return new(Id, true, "rtk hook wired (bare `rtk hook claude`, resolved via PATH)", false);
         var exe = Path.Combine(ctx.Config.InstallRoot, "rtk", "rtk.exe");
-        var cmd = entry["hooks"]![0]!["command"]!.GetValue<string>();
-        return cmd.Contains(exe, StringComparison.OrdinalIgnoreCase)
-            ? new(Id, true, "rtk hook wired", false)
-            : new(Id, false, $"rtk hook points at a stale path: {cmd}", true);
+        return exePath.Contains(exe, StringComparison.OrdinalIgnoreCase)
+            ? new(Id, true, "rtk hook wired (full-path fallback)", false)
+            : new(Id, false, $"rtk hook points at a stale path: {exePath}", true);
     }
-    public bool Fix(DoctorContext ctx)
+    public bool Fix(DoctorContext ctx) => RtkHookForm.Rewrite(ctx, bare: true);
+}
+
+/// <summary>The bare `rtk hook claude` spelling is the one rtk's own self-check recognizes, so it
+/// is what install writes — but it only works while rtk's dir is on PATH. If it is not, Claude
+/// cannot resolve the hook command and filtering stops **silently**: no error surfaces, the stack
+/// just quietly stops saving tokens. That silence is why this check exists. The remediation is the
+/// full-path spelling, which always resolves at the price of rtk's cosmetic warning line.</summary>
+public sealed class RtkHookUnresolvableCheck : IDoctorCheck
+{
+    public string Id => "rtk-hook-unresolvable";
+
+    public CheckResult Detect(DoctorContext ctx)
+    {
+        if (!ctx.Config.Rtk.Enabled) return new(Id, true, "rtk disabled", false);
+        if (ClaudeSurgeon.CountRtkHooks(ctx.Settings) == 0)
+            return new(Id, true, "no rtk hook to resolve", false);   // rtk-hook-missing owns this
+        if (RtkHookForm.FullPathCommand(ctx.Settings) is not null)
+            return new(Id, true, "hook uses a full path — no PATH lookup needed", false);
+        return ctx.Runner.Run("rtk", "--version", 15000).Ok
+            ? new(Id, true, "bare hook resolves via PATH", false)
+            : new(Id, false, "hook is the bare `rtk hook claude` but rtk is NOT resolvable on "
+                           + "PATH — filtering is silently off. Fix rewrites it to the full path.", true);
+    }
+
+    public bool Fix(DoctorContext ctx) => RtkHookForm.Rewrite(ctx, bare: false);
+}
+
+internal static class RtkHookForm
+{
+    /// <summary>The wired rtk hook command when it names an .exe, else null (= the bare form).</summary>
+    public static string? FullPathCommand(JsonNode settings) =>
+        settings["hooks"]?["PreToolUse"]?.AsArray()
+            .Select(e => e?["hooks"]?[0]?["command"]?.GetValue<string>())
+            .FirstOrDefault(c => c?.Contains("rtk.exe", StringComparison.OrdinalIgnoreCase) == true);
+
+    public static bool Rewrite(DoctorContext ctx, bool bare)
     {
         ctx.SettingsChanged |= ClaudeSurgeon.EnsureRtkHook(ctx.Settings,
-            Path.Combine(ctx.Config.InstallRoot, "rtk", "rtk.exe"), ctx.Config.Rtk.HookMatcher);
+            Path.Combine(ctx.Config.InstallRoot, "rtk", "rtk.exe"),
+            ctx.Config.Rtk.HookMatcher, bare);
         return true;
     }
 }
@@ -276,10 +361,9 @@ public sealed class DisabledDriftCheck : IDoctorCheck
     public CheckResult Detect(DoctorContext ctx)
     {
         var drift = new List<string>();
-        var rtkWired = ctx.Settings["hooks"]?["PreToolUse"]?.AsArray()?.Any(e =>
-            e?["hooks"]?[0]?["command"]?.GetValue<string>()
-                ?.Contains("rtk.exe", StringComparison.OrdinalIgnoreCase) == true) == true;
-        if (!ctx.Config.Rtk.Enabled && rtkWired) drift.Add("rtk disabled but hook wired");
+        // Counts every spelling: matching "rtk.exe" alone missed a wired bare hook entirely.
+        if (!ctx.Config.Rtk.Enabled && ClaudeSurgeon.CountRtkHooks(ctx.Settings) > 0)
+            drift.Add("rtk disabled but hook wired");
         var sembleWired = ctx.ClaudeJson["mcpServers"]?["semble"] is not null;
         if (!ctx.Config.Semble.Enabled && sembleWired) drift.Add("semble disabled but MCP wired");
         return drift.Count == 0

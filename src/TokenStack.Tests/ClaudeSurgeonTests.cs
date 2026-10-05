@@ -32,6 +32,70 @@ public class ClaudeSurgeonTests
 
     // ---------- RTK PreToolUse hook ----------
 
+    /// <summary>`rtk verify` only reports the bare `rtk hook claude` spelling, so that form gets
+    /// added by hand beside ours. Both filter identically (measured), but two entries mean rtk
+    /// is spawned twice on every Bash call — and while we matched on "rtk.exe" alone, the
+    /// hand-added copy was invisible to us and survived every re-install.</summary>
+    [Fact]
+    public void EnsureRtkHook_CollapsesAHandAddedBareHook()
+    {
+        var root = Parse("""
+        {"hooks":{"PreToolUse":[
+          {"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]},
+          {"matcher":"Bash","hooks":[{"type":"command","command":"\"C:\\ts\\rtk\\rtk.exe\" hook claude"}]}
+        ]}}
+        """);
+        Assert.Equal(2, ClaudeSurgeon.CountRtkHooks(root));
+
+        Assert.True(ClaudeSurgeon.EnsureRtkHook(root, @"C:\ts\rtk\rtk.exe", "Bash"));
+
+        Assert.Equal(1, ClaudeSurgeon.CountRtkHooks(root));
+        Assert.Equal("rtk hook claude",
+            root["hooks"]!["PreToolUse"]![0]!["hooks"]![0]!["command"]!.GetValue<string>());
+    }
+
+    /// <summary>The bare spelling is the default because it is the only one `rtk verify`
+    /// recognizes; the full path stays reachable as doctor's fallback for a broken PATH.</summary>
+    [Fact]
+    public void EnsureRtkHook_WritesBareByDefault_AndFullPathOnDemand()
+    {
+        var bare = Parse("{}");
+        ClaudeSurgeon.EnsureRtkHook(bare, @"C:\ts\rtk\rtk.exe", "Bash");
+        Assert.Equal("rtk hook claude",
+            bare["hooks"]!["PreToolUse"]![0]!["hooks"]![0]!["command"]!.GetValue<string>());
+
+        var full = Parse("{}");
+        ClaudeSurgeon.EnsureRtkHook(full, @"C:\ts\rtk\rtk.exe", "Bash", bare: false);
+        Assert.Equal(@"""C:\ts\rtk\rtk.exe"" hook claude",
+            full["hooks"]!["PreToolUse"]![0]!["hooks"]![0]!["command"]!.GetValue<string>());
+
+        // and each form replaces the other in place, never stacking a second entry
+        Assert.True(ClaudeSurgeon.EnsureRtkHook(full, @"C:\ts\rtk\rtk.exe", "Bash"));
+        Assert.Equal(1, ClaudeSurgeon.CountRtkHooks(full));
+    }
+
+    [Fact]
+    public void RemoveRtkHook_TakesEverySpelling_AndSparesForeignHooks()
+    {
+        var root = Parse("""
+        {"hooks":{"PreToolUse":[
+          {"matcher":"Bash","hooks":[{"type":"command","command":"rtk hook claude"}]},
+          {"matcher":"Bash","hooks":[{"type":"command","command":"\"C:\\ts\\rtk\\rtk.exe\" hook claude"}]},
+          {"matcher":"Bash","hooks":[{"type":"command","command":"my-own-linter --check"}]}
+        ]}}
+        """);
+        Assert.True(ClaudeSurgeon.RemoveRtkHook(root));
+        Assert.Equal(0, ClaudeSurgeon.CountRtkHooks(root));
+
+        var left = root["hooks"]!["PreToolUse"]!.AsArray();
+        Assert.Single(left);
+        Assert.Equal("my-own-linter --check", left[0]!["hooks"]![0]!["command"]!.GetValue<string>());
+    }
+
+    [Fact]
+    public void CountRtkHooks_IsZeroWhenNothingIsWired()
+        => Assert.Equal(0, ClaudeSurgeon.CountRtkHooks(Parse("""{"hooks":{"PreToolUse":[]}}""")));
+
     [Fact]
     public void EnsureRtkHook_RewritesStalePath_NoDuplicate()
     {
@@ -41,7 +105,7 @@ public class ClaudeSurgeonTests
         var pre = root["hooks"]!["PreToolUse"]!.AsArray();
         Assert.Single(pre);
         var cmd = pre[0]!["hooks"]![0]!["command"]!.GetValue<string>();
-        Assert.Equal("\"C:\\ts\\rtk\\rtk.exe\" hook claude", cmd);
+        Assert.Equal("rtk hook claude", cmd);
     }
 
     [Fact]

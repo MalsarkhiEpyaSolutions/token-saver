@@ -14,9 +14,14 @@ public static class ClaudeSurgeon
 
     // ---------- RTK PreToolUse ----------
 
-    public static bool EnsureRtkHook(JsonNode root, string rtkExePath, string matcher)
+    /// <summary>Writes the bare `rtk hook claude` spelling by default — the only one rtk's own
+    /// self-check recognizes, so the full-path form made rtk print "No hook installed" on every
+    /// Bash call even though it was filtering correctly. Install puts rtk's dir on the USER PATH,
+    /// so the bare form resolves for any newly-launched Claude. Pass <paramref name="bare"/>=false
+    /// for the full-path fallback, which doctor writes when rtk turns out to be unresolvable.</summary>
+    public static bool EnsureRtkHook(JsonNode root, string rtkExePath, string matcher, bool bare = true)
     {
-        var wanted = $"\"{rtkExePath}\" hook claude";
+        var wanted = bare ? "rtk hook claude" : $"\"{rtkExePath}\" hook claude";
         var pre = GetOrCreateArray(root, "hooks", "PreToolUse");
         var ours = pre.Where(IsRtkEntry).ToList();
 
@@ -43,8 +48,22 @@ public static class ClaudeSurgeon
         return ours.Count > 0;
     }
 
-    private static bool IsRtkEntry(JsonNode? entry) =>
-        FirstCommand(entry)?.Contains("rtk.exe", StringComparison.OrdinalIgnoreCase) == true;
+    /// <summary>How many rtk PreToolUse entries are wired, in ANY spelling — more than one means
+    /// rtk spawns that many times per Bash call, so doctor reports it and Ensure collapses it.
+    /// Both spellings were measured to produce byte-identical rewrites, and feeding an
+    /// already-rewritten command back through the hook no-ops, so a duplicate costs a process
+    /// per Bash call but corrupts nothing. Matching on "rtk.exe" alone used to leave hand-added
+    /// bare copies invisible to us, so they survived every re-install.</summary>
+    public static int CountRtkHooks(JsonNode root) =>
+        root["hooks"]?["PreToolUse"]?.AsArray().Count(IsRtkEntry) ?? 0;
+
+    private static bool IsRtkEntry(JsonNode? entry)
+    {
+        var cmd = FirstCommand(entry);
+        if (cmd is null) return false;
+        return cmd.Contains("rtk.exe", StringComparison.OrdinalIgnoreCase)
+            || cmd.Contains("hook claude", StringComparison.OrdinalIgnoreCase);
+    }
 
     // ---------- CCO read-cache hooks (PreToolUse[Read] + PostToolUse[Edit|Write] + PreCompact) ----------
 

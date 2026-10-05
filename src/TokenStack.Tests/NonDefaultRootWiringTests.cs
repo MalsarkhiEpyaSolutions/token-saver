@@ -38,8 +38,10 @@ public class NonDefaultRootWiringTests
         var cfg = StackConfig.CreateDefault(Root);
         var (settings, _) = Wire(cfg);
 
-        // rtk PreToolUse hook and the three cco read-cache hooks must live under E:.
-        Assert.Contains(@"E:\\token-stack\\rtk\\rtk.exe", settings);
+        // The rtk hook is the bare spelling, so it carries no path at all — rtk's binding to the
+        // chosen root lives in the USER PATH entry RtkComponent.Install writes, not here. Every
+        // path that IS written to settings.json still has to follow E:.
+        Assert.Contains("rtk hook claude", settings);
         Assert.Contains(@"E:\\token-stack\\cco\\src\\read-cache.js", settings);
         Assert.Contains(@"E:\\token-stack\\token-saver.exe", settings);   // session status hook
 
@@ -55,7 +57,7 @@ public class NonDefaultRootWiringTests
         cfg.Rtk.Enabled = cfg.Cco.Enabled = false;
         var (settings, _) = Wire(cfg);
 
-        Assert.DoesNotContain("rtk.exe", settings);
+        Assert.DoesNotContain("hook claude", settings);  // catches BOTH spellings, not just the path one
         Assert.DoesNotContain("read-cache.js", settings);
     }
 

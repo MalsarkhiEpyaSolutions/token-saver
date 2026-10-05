@@ -55,7 +55,9 @@ public class ToggleServiceTests
 
         new ToggleService(new FakeRunner(), new FakeEnv(), sp, cj).ApplyWiring(cfg);
 
-        Assert.DoesNotContain("rtk.exe", File.ReadAllText(sp));
+        // "hook claude" catches BOTH spellings — asserting only on "rtk.exe" would now pass
+        // trivially even if a bare hook had survived removal.
+        Assert.DoesNotContain("hook claude", File.ReadAllText(sp));
     }
 
     [Fact]
@@ -86,7 +88,7 @@ public class ToggleServiceTests
         Assert.True(st is { Headroom: true, Rtk: true, Semble: true });
         Assert.Contains(runner.Calls, c => c.Contains("/enable")); // re-armed after a prior off
         Assert.Equal("http://127.0.0.1:8787", env.User["ANTHROPIC_BASE_URL"]);
-        Assert.Contains("rtk.exe", File.ReadAllText(sp));
+        Assert.Contains("rtk hook claude", File.ReadAllText(sp));
         Assert.Contains("semble", File.ReadAllText(cj));
     }
 
@@ -119,6 +121,6 @@ public class ToggleServiceTests
         Assert.False(st.Cco);
         var s = File.ReadAllText(sp);
         Assert.DoesNotContain("read-cache.js", s);
-        Assert.Contains("rtk.exe", s); // RTK survived
+        Assert.Contains("hook claude", s); // RTK survived (either spelling)
     }
 }
