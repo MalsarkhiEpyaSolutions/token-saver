@@ -36,7 +36,8 @@ public sealed class ToggleService(
         var settings = settingsEditor.Load();
         var changed = cfg.Rtk.Enabled
             ? ClaudeSurgeon.EnsureRtkHook(settings,
-                Path.Combine(cfg.InstallRoot, "rtk", "rtk.exe"), cfg.Rtk.HookMatcher)
+                Path.Combine(cfg.InstallRoot, "rtk", "rtk.exe"), cfg.Rtk.HookMatcher,
+                bare: RtkComponent.BareHookIsSafe(env, cfg))
             : ClaudeSurgeon.RemoveRtkHook(settings);
         changed |= cfg.Cco.Enabled
             ? ClaudeSurgeon.EnsureCcoHooks(settings,

@@ -88,7 +88,9 @@ public class ToggleServiceTests
         Assert.True(st is { Headroom: true, Rtk: true, Semble: true });
         Assert.Contains(runner.Calls, c => c.Contains("/enable")); // re-armed after a prior off
         Assert.Equal("http://127.0.0.1:8787", env.User["ANTHROPIC_BASE_URL"]);
-        Assert.Contains("rtk hook claude", File.ReadAllText(sp));
+        // Spelling-agnostic: this test asks "did everything get wired", and which rtk spelling is
+        // written depends on whether PATH provably resolves to our exe (it cannot here).
+        Assert.Contains("hook claude", File.ReadAllText(sp));
         Assert.Contains("semble", File.ReadAllText(cj));
     }
 

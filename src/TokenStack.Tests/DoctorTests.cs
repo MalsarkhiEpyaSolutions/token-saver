@@ -76,47 +76,97 @@ public class DoctorTests
     ]}}
     """;
 
-    private static FakeRunner RtkOnPath(bool onPath) =>
-        new() { Handler = (f, _) => f == "rtk" && !onPath ? new(1, "", "not found") : new(0, "rtk 0.42.3", "") };
-
-    /// <summary>A bare hook with rtk off PATH is the one failure mode that is completely silent —
-    /// Claude cannot run the command and simply stops filtering, with nothing printed anywhere.</summary>
-    [Fact]
-    public void RtkHookUnresolvable_CatchesTheSilentFailure_AndFallsBackToTheFullPath()
+    /// <summary>Lays out a real rtk.exe under <paramref name="root"/> and, when
+    /// <paramref name="shadowDir"/> is given, a second one in a dir that precedes it on PATH.
+    /// Real files because the resolver probes the filesystem the way Windows does.</summary>
+    private static DoctorContext PathCtx(out string root, string? shadowDir = null,
+                                         string settings = BareRtkHook)
     {
-        var ctx = Ctx(settings: BareRtkHook, runner: RtkOnPath(false));
+        var tmp = Path.Combine(Path.GetTempPath(), "ts-path", Guid.NewGuid().ToString("N"));
+        root = Path.Combine(tmp, "ts");
+        var ourDir = Path.Combine(root, "rtk");
+        Directory.CreateDirectory(ourDir);
+        File.WriteAllText(Path.Combine(ourDir, "rtk.exe"), "");
+
+        var machine = "";
+        if (shadowDir is not null)
+        {
+            machine = Path.Combine(tmp, shadowDir);
+            Directory.CreateDirectory(machine);
+            File.WriteAllText(Path.Combine(machine, "rtk.exe"), "");
+        }
+        var r = root;
+        return Ctx(e =>
+        {
+            e.Process["Path"] = machine;          // MACHINE PATH is searched first
+            e.User["Path"] = Path.Combine(r, "rtk");
+            e.Process["PATHEXT"] = ".COM;.EXE;.BAT;.CMD";
+        }, settings: settings, cfg: StackConfig.CreateDefault(root));
+    }
+
+    /// <summary>The dangerous mode: a different rtk earlier on PATH is handed every Bash command
+    /// and returns the rewrite Claude executes. `rtk --version` succeeding cannot distinguish
+    /// this from a healthy install, which is why the check compares resolved paths.</summary>
+    [Fact]
+    public void RtkHookUnresolvable_FlagsAShadowingRtk_AndPinsTheFullPath()
+    {
+        var ctx = PathCtx(out var root, shadowDir: "evil");
         var check = new RtkHookUnresolvableCheck();
 
         var bad = check.Detect(ctx);
         Assert.False(bad.Ok);
         Assert.True(bad.CanFix);
-        Assert.Contains("silently off", bad.Detail);
+        Assert.Contains("shadows", bad.Detail);
+        Assert.Contains("evil", bad.Detail);        // names the actual winner
 
         Assert.True(check.Fix(ctx));
-        Assert.Contains(@"C:\ts\rtk\rtk.exe",
+        Assert.Contains(Path.Combine(root, "rtk", "rtk.exe"),
             ctx.Settings["hooks"]!["PreToolUse"]![0]!["hooks"]![0]!["command"]!.GetValue<string>());
-        Assert.True(check.Detect(ctx).Ok);          // full path needs no PATH lookup
+        Assert.True(check.Detect(ctx).Ok);          // a pinned path needs no PATH lookup
         Assert.Equal(1, ClaudeSurgeon.CountRtkHooks(ctx.Settings));
     }
 
+    /// <summary>The silent mode: nothing resolves, so Claude cannot run the hook and filtering
+    /// stops with nothing printed anywhere.</summary>
     [Fact]
-    public void RtkHookUnresolvable_QuietWhenBareResolves_OrNothingIsWired()
+    public void RtkHookUnresolvable_CatchesTheSilentFailure_WhenNothingResolves()
+    {
+        var ctx = Ctx(settings: BareRtkHook);      // FakeEnv has no PATH at all
+        var bad = new RtkHookUnresolvableCheck().Detect(ctx);
+        Assert.False(bad.Ok);
+        Assert.Contains("silently off", bad.Detail);
+    }
+
+    [Fact]
+    public void RtkHookUnresolvable_QuietWhenBareResolvesToOurs_OrNothingIsWired()
     {
         var check = new RtkHookUnresolvableCheck();
-        Assert.True(check.Detect(Ctx(settings: BareRtkHook, runner: RtkOnPath(true))).Ok);
+        Assert.True(check.Detect(PathCtx(out _)).Ok);
         // an absent hook belongs to rtk-hook-missing; two checks shouting about it is noise
-        Assert.True(check.Detect(Ctx(runner: RtkOnPath(false))).Ok);
+        Assert.True(check.Detect(Ctx()).Ok);
     }
 
-    /// <summary>Collapsing a duplicate must not silently switch a machine that needs the full
-    /// path over to the bare form — that would trade a visible warning for silent no-filtering.</summary>
+    /// <summary>Collapsing a duplicate must not switch a machine whose PATH is unsafe over to the
+    /// bare form — that would trade a visible warning for a substitutable command.</summary>
     [Fact]
-    public void RtkHookDuplicate_CollapsesToFullPath_WhenRtkIsOffPath()
+    public void RtkHookDuplicate_CollapsesToFullPath_WhenPathIsUnsafe()
     {
-        var ctx = Ctx(settings: TwoRtkHooks, runner: RtkOnPath(false));
+        foreach (var ctx in new[] { PathCtx(out _, "evil", TwoRtkHooks),   // shadowed
+                                    Ctx(settings: TwoRtkHooks) })         // nothing resolves
+        {
+            Assert.True(new RtkHookDuplicateCheck().Fix(ctx));
+            Assert.Equal(1, ClaudeSurgeon.CountRtkHooks(ctx.Settings));
+            Assert.Contains("rtk.exe",
+                ctx.Settings["hooks"]!["PreToolUse"]![0]!["hooks"]![0]!["command"]!.GetValue<string>());
+        }
+    }
+
+    [Fact]
+    public void RtkHookDuplicate_CollapsesToBare_WhenPathResolvesToOurs()
+    {
+        var ctx = PathCtx(out _, settings: TwoRtkHooks);
         Assert.True(new RtkHookDuplicateCheck().Fix(ctx));
-        Assert.Equal(1, ClaudeSurgeon.CountRtkHooks(ctx.Settings));
-        Assert.Contains("rtk.exe",
+        Assert.Equal("rtk hook claude",
             ctx.Settings["hooks"]!["PreToolUse"]![0]!["hooks"]![0]!["command"]!.GetValue<string>());
     }
 

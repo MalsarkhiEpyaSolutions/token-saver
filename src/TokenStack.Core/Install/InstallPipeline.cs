@@ -249,8 +249,11 @@ public sealed class InstallPipeline(
         var changed = false;
 
         if (cfg.Rtk.Enabled)
+            // Bare spelling only when a bare `rtk` provably resolves to the exe we installed —
+            // otherwise pin the path rather than hand every Bash rewrite to whatever PATH finds.
             changed |= ClaudeSurgeon.EnsureRtkHook(settings,
-                Path.Combine(cfg.InstallRoot, "rtk", "rtk.exe"), cfg.Rtk.HookMatcher);
+                Path.Combine(cfg.InstallRoot, "rtk", "rtk.exe"), cfg.Rtk.HookMatcher,
+                bare: RtkComponent.BareHookIsSafe(env, cfg));
         else
             changed |= ClaudeSurgeon.RemoveRtkHook(settings);
 

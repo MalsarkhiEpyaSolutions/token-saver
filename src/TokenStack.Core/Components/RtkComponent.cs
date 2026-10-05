@@ -59,5 +59,22 @@ public sealed class RtkComponent(IProcessRunner runner, IEnvStore env)
 
     public bool IsOnPath() => runner.Run("rtk", "--version", 10000).Ok;
 
+    /// <summary>Which rtk a bare `rtk` would run, judged against the PATH a *newly launched*
+    /// Claude will see: the process PATH (which carries the whole MACHINE PATH plus the USER
+    /// entries that existed at startup) joined with the persisted USER PATH we just wrote. Ours
+    /// is appended last, so anything able to shadow it also appears earlier in this join —
+    /// which is exactly the ordering we need to detect shadowing.</summary>
+    public static string? ResolveOnPath(IEnvStore env) => PathResolver.Resolve(
+        string.Join(';', new[] { env.GetProcess("Path"), env.GetUser("Path") }
+            .Where(s => !string.IsNullOrWhiteSpace(s))),
+        env.GetProcess("PATHEXT"),
+        "rtk");
+
+    /// <summary>True only when a bare `rtk` provably resolves to the exe WE installed. Gates
+    /// writing the bare hook spelling: `rtk --version` succeeding proves nothing, because a
+    /// planted binary answers it too, and that binary would control every Bash rewrite.</summary>
+    public static bool BareHookIsSafe(IEnvStore env, StackConfig cfg) =>
+        PathResolver.SamePath(ResolveOnPath(env), Path.Combine(cfg.InstallRoot, "rtk", "rtk.exe"));
+
     public void Unwire(StackConfig cfg) => UserPath.Remove(env, RtkDir(cfg));
 }

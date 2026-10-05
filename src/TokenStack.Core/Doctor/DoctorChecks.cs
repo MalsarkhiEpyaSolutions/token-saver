@@ -146,10 +146,10 @@ public sealed class RtkHookDuplicateCheck : IDoctorCheck
             : new(Id, false, $"{n} rtk hooks wired — rtk runs {n}x per Bash call", true);
     }
 
-    /// <summary>Collapses to the bare spelling, except when rtk is unresolvable on PATH — there
-    /// the full path is the only form that keeps filtering alive.</summary>
+    /// <summary>Collapses to the bare spelling only when a bare `rtk` provably resolves to OUR
+    /// exe. Otherwise the full path is the only form that is both live and unsubstitutable.</summary>
     public bool Fix(DoctorContext ctx) =>
-        RtkHookForm.Rewrite(ctx, bare: ctx.Runner.Run("rtk", "--version", 15000).Ok);
+        RtkHookForm.Rewrite(ctx, bare: RtkComponent.BareHookIsSafe(ctx.Env, ctx.Config));
 }
 
 /// <summary>rtk shells out to ripgrep for `rtk grep`. Without it rtk falls back to a direct exec
@@ -192,14 +192,26 @@ public sealed class RtkHookMissingCheck : IDoctorCheck
             ? new(Id, true, "rtk hook wired (full-path fallback)", false)
             : new(Id, false, $"rtk hook points at a stale path: {exePath}", true);
     }
-    public bool Fix(DoctorContext ctx) => RtkHookForm.Rewrite(ctx, bare: true);
+    public bool Fix(DoctorContext ctx) =>
+        RtkHookForm.Rewrite(ctx, bare: RtkComponent.BareHookIsSafe(ctx.Env, ctx.Config));
 }
 
 /// <summary>The bare `rtk hook claude` spelling is the one rtk's own self-check recognizes, so it
-/// is what install writes — but it only works while rtk's dir is on PATH. If it is not, Claude
-/// cannot resolve the hook command and filtering stops **silently**: no error surfaces, the stack
-/// just quietly stops saving tokens. That silence is why this check exists. The remediation is the
-/// full-path spelling, which always resolves at the price of rtk's cosmetic warning line.</summary>
+/// is what install writes — but a bare command is only as trustworthy as the first PATH hit, and
+/// it has two distinct failure modes, both of which this check owns:
+///
+/// 1. <b>Nothing resolves</b> — Claude cannot run the hook command and filtering stops
+///    **silently**. Nothing is printed anywhere; the stack just quietly stops saving tokens.
+/// 2. <b>Something else resolves</b> — a different rtk earlier on PATH receives every Bash
+///    command on stdin and returns the `updatedInput.command` Claude then executes. Our dir is
+///    appended to the USER PATH, which Windows searches after all of MACHINE PATH, so many
+///    directories outrank it — including several writable without admin. The user's own notes
+///    record a benign instance of this (a different project also ships an `rtk`).
+///
+/// Asking "does `rtk --version` succeed?" cannot tell these apart from a healthy install: a
+/// planted binary answers it happily. Only comparing the resolved path to the exe we installed
+/// can. Both modes remediate the same way — pin the absolute path, trading rtk's cosmetic
+/// warning line for a command that cannot be substituted.</summary>
 public sealed class RtkHookUnresolvableCheck : IDoctorCheck
 {
     public string Id => "rtk-hook-unresolvable";
@@ -210,11 +222,17 @@ public sealed class RtkHookUnresolvableCheck : IDoctorCheck
         if (ClaudeSurgeon.CountRtkHooks(ctx.Settings) == 0)
             return new(Id, true, "no rtk hook to resolve", false);   // rtk-hook-missing owns this
         if (RtkHookForm.FullPathCommand(ctx.Settings) is not null)
-            return new(Id, true, "hook uses a full path — no PATH lookup needed", false);
-        return ctx.Runner.Run("rtk", "--version", 15000).Ok
-            ? new(Id, true, "bare hook resolves via PATH", false)
-            : new(Id, false, "hook is the bare `rtk hook claude` but rtk is NOT resolvable on "
-                           + "PATH — filtering is silently off. Fix rewrites it to the full path.", true);
+            return new(Id, true, "hook pins the full path — no PATH lookup", false);
+
+        var resolved = RtkComponent.ResolveOnPath(ctx.Env);
+        if (resolved is null)
+            return new(Id, false, "hook is the bare `rtk hook claude` but NO rtk resolves on PATH "
+                                + "— filtering is silently off. Fix pins the full path.", true);
+        var ours = Path.Combine(ctx.Config.InstallRoot, "rtk", "rtk.exe");
+        if (!PathResolver.SamePath(resolved, ours))
+            return new(Id, false, $"a DIFFERENT rtk shadows ours on PATH ({resolved}) — it is handed "
+                                + "every Bash command and chooses the rewrite. Fix pins the full path.", true);
+        return new(Id, true, "bare hook resolves to our rtk", false);
     }
 
     public bool Fix(DoctorContext ctx) => RtkHookForm.Rewrite(ctx, bare: false);

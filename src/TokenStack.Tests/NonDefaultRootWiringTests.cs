@@ -38,10 +38,11 @@ public class NonDefaultRootWiringTests
         var cfg = StackConfig.CreateDefault(Root);
         var (settings, _) = Wire(cfg);
 
-        // The rtk hook is the bare spelling, so it carries no path at all — rtk's binding to the
-        // chosen root lives in the USER PATH entry RtkComponent.Install writes, not here. Every
-        // path that IS written to settings.json still has to follow E:.
-        Assert.Contains("rtk hook claude", settings);
+        // No rtk resolves on this fake PATH, so the hook pins the absolute path rather than a
+        // substitutable bare command — and that path, like every other, must follow E:.
+        // (On a machine where PATH provably resolves to our exe the hook is the bare spelling and
+        // carries no path; rtk's root binding then lives in the USER PATH entry Install writes.)
+        Assert.Contains(@"E:\\token-stack\\rtk\\rtk.exe", settings);
         Assert.Contains(@"E:\\token-stack\\cco\\src\\read-cache.js", settings);
         Assert.Contains(@"E:\\token-stack\\token-saver.exe", settings);   // session status hook
 
